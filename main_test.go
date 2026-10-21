@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestMain(t *testing.T) {
+func TestHomePage(t *testing.T) {
 	req, err := http.NewRequest("GET", "/home", nil)
 	if err != nil {
 		t.Fatal(err)

@@ -11,6 +11,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run unit tests with coverage
+        run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
+
+      - name: Show coverage summary
+        run: go tool cover -func=coverage.out
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -20,9 +37,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push (coverage mode)
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          build-args: |
+            GO_BUILD_FLAGS=-cover
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/my-go-app:${{ github.sha }}
