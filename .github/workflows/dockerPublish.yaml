@@ -3,12 +3,10 @@ name: ci
 on:
   push:
     branches: [master]
-  pull_request:
-    branches: [master]
 
 permissions:
   contents: read
-  pull-requests: write   # needed to comment on the PR
+  pull-requests: write
 
 jobs:
   test-build:
@@ -34,7 +32,7 @@ jobs:
         id: docker_build
         run: docker build -t dev878vishal/my-go-app:${{ github.sha }} .
 
-      # ---- Check 2: coverage.out exists (only if the image step succeeded) ----
+      # ---- Check 2: coverage.out exists ----
       - name: Check coverage.out exists
         id: cov_check
         if: steps.docker_build.outcome == 'success'
@@ -43,12 +41,11 @@ jobs:
             echo "coverage.out missing or empty"; exit 1
           fi
 
-      # ---- Read coverage.out and build the table ----
+      # ---- Build the table from coverage.out ----
       - name: Build coverage table
         id: cov_table
         if: steps.cov_check.outcome == 'success'
         run: |
-          # coverage.out lines look like: file:start,end <numStmts> <count>
           read total covered < <(awk 'NR>1 {t+=$2; if ($3>0) c+=$2} END {print t, c}' coverage.out)
           pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
 
@@ -64,20 +61,29 @@ jobs:
 
           cat coverage-table.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Comment table on PR
-        if: github.event_name == 'pull_request' && steps.cov_table.outcome == 'success'
+      # ---- Find the PR (if this commit came from a merge) ----
+      - name: Find PR for this commit
+        id: find_pr
+        if: steps.cov_table.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr comment ${{ github.event.pull_request.number }} --body-file coverage-table.md --edit-last --create-if-none
+        run: |
+          pr=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls --jq '.[0].number // empty')
+          echo "pr_number=$pr" >> "$GITHUB_OUTPUT"
 
-      # ---- Push only on commits to master ----
+      - name: Comment table on PR
+        if: steps.find_pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr comment ${{ steps.find_pr.outputs.pr_number }} --body-file coverage-table.md
+
       - name: Login to Docker Hub
-        if: github.event_name == 'push' && steps.docker_build.outcome == 'success'
+        if: steps.docker_build.outcome == 'success'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Push image
-        if: github.event_name == 'push' && steps.docker_build.outcome == 'success'
+        if: steps.docker_build.outcome == 'success'
         run: docker push dev878vishal/my-go-app:${{ github.sha }}
