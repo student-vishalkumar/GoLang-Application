@@ -1,26 +1,27 @@
-name: Build and Push Docker Image
+name: ci
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: write   # needed to comment on the PR
 
 jobs:
-  build-and-push:
+  test-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      - name: Run unit tests with coverage
-        run: go test ./... -v -coverprofile=coverage.out -covermode=atomic
-
-      - name: Show coverage summary
-        run: go tool cover -func=coverage.out
+      - name: Unit tests with coverage
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -28,20 +29,55 @@ jobs:
           name: coverage-report
           path: coverage.out
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # ---- Check 1: Docker image is created ----
+      - name: Build Docker image
+        id: docker_build
+        run: docker build -t dev878vishal/my-go-app:${{ github.sha }} .
 
-      - name: Log in to Docker Hub
+      # ---- Check 2: coverage.out exists (only if the image step succeeded) ----
+      - name: Check coverage.out exists
+        id: cov_check
+        if: steps.docker_build.outcome == 'success'
+        run: |
+          if [ ! -s coverage.out ]; then
+            echo "coverage.out missing or empty"; exit 1
+          fi
+
+      # ---- Read coverage.out and build the table ----
+      - name: Build coverage table
+        id: cov_table
+        if: steps.cov_check.outcome == 'success'
+        run: |
+          # coverage.out lines look like: file:start,end <numStmts> <count>
+          read total covered < <(awk 'NR>1 {t+=$2; if ($3>0) c+=$2} END {print t, c}' coverage.out)
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
+
+          {
+            echo "### Code Coverage Report"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Total Statements | $total |"
+            echo "| Total Covered | $covered |"
+            echo "| Code Coverage | $pct |"
+          } > coverage-table.md
+
+          cat coverage-table.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment table on PR
+        if: github.event_name == 'pull_request' && steps.cov_table.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr comment ${{ github.event.pull_request.number }} --body-file coverage-table.md --edit-last --create-if-none
+
+      # ---- Push only on commits to master ----
+      - name: Login to Docker Hub
+        if: github.event_name == 'push' && steps.docker_build.outcome == 'success'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push (coverage mode)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          build-args: |
-            GO_BUILD_FLAGS=-cover
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/my-go-app:${{ github.sha }}
+      - name: Push image
+        if: github.event_name == 'push' && steps.docker_build.outcome == 'success'
+        run: docker push dev878vishal/my-go-app:${{ github.sha }}
